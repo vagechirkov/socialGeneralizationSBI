@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "socialgeneralizationsbi"
+version = "0.1.0"
+description = ""
+authors = ["valery <vagechirkov@gmail.com>"]
+package-mode = false
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+jupyter = "^1.1.1"
+numpy = "<2.0.0"
+sbi = "^0.23.3"
+scipy = "<1.13"
+
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.9.5"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
