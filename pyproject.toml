@@ -5,13 +5,14 @@ description = ""
 authors = ["valery <vagechirkov@gmail.com>"]
 package-mode = false
 readme = "README.md"
+license = "MIT"
 
 [tool.poetry.dependencies]
-python = "^3.12"
+python = "^3.9"
 jupyter = "^1.1.1"
-numpy = "<2.0.0"
+notebook = "6.4.12"
+numpy = "1.23.5"
 sbi = "^0.23.3"
-scipy = "<1.13"
 
 
 [tool.poetry.group.dev.dependencies]
