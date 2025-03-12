@@ -3,13 +3,12 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-import arviz as az
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 from sbi.analysis import pairplot
-from sbi.inference import NLE
+from sbi.inference import NLE, SNPE
 from sbi.utils import BoxUniform, MultipleIndependent
 from torch.distributions import Exponential, LogNormal
 import torch.nn.functional as F
@@ -91,15 +90,15 @@ def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_si
     params = list(params)
     _proposal = MultipleIndependent(
         [
-            LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # lambda
-            LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # beta
-            LogNormal(torch.tensor([-4.0]), torch.tensor([0.6])),   # tau
-            Exponential(torch.tensor([0.2])),                       # eps_soc
+            # LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # lambda
+            # LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # beta
+            # LogNormal(torch.tensor([-4.0]), torch.tensor([0.6])),   # tau
+            # Exponential(torch.tensor([0.2])),                       # eps_soc
 
-            # BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # lambda
-            # BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # beta
-            # BoxUniform(torch.tensor([0.0001]), torch.tensor([0.1])),   # tau
-            # BoxUniform(torch.tensor([0.0001]), torch.tensor([20])),   # eps_soc
+            BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # lambda
+            BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # beta
+            BoxUniform(torch.tensor([0.0001]), torch.tensor([0.1])),   # tau
+            BoxUniform(torch.tensor([0.0001]), torch.tensor([20])),   # eps_soc
 
             # BoxUniform(torch.tensor([0.0]), torch.tensor([n_environments - 1.0])),   # env
             # BoxUniform(torch.full((n_options,), reward_min),
@@ -137,7 +136,8 @@ def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_si
     # x = torch.tensor(simulations['choice'].to_numpy(), dtype=torch.float32).unsqueeze(1)
     theta, x = prepare_theta_x_nle(simulations, params=params, n_options=n_options)
 
-    trainer = NLE(_proposal, show_progress_bars=True, density_estimator="maf")
+    trainer = SNPE(_proposal, show_progress_bars=True, density_estimator="maf")
+    # trainer = NLE(_proposal, show_progress_bars=True, density_estimator="maf")
     estimator = trainer.append_simulations(theta, x)
     _inference = estimator.train()
 
@@ -205,7 +205,7 @@ def fit_posterior(density_estimator, _theta_o, _theta_o_df, _x_o, _save_dir, num
     mcmc_parameters = dict(
         num_chains=7,
         thin=1,
-        warmup_steps=400,
+        warmup_steps=500,
         init_strategy="proposal",
         num_workers=8
     )
@@ -216,6 +216,10 @@ def fit_posterior(density_estimator, _theta_o, _theta_o_df, _x_o, _save_dir, num
             LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # beta
             LogNormal(torch.tensor([-4.0]), torch.tensor([0.6])),   # tau
             Exponential(torch.tensor([0.2])),                       # eps_soc
+            # BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # lambda
+            # BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # beta
+            # BoxUniform(torch.tensor([0.0001]), torch.tensor([0.1])),   # tau
+            # BoxUniform(torch.tensor([0.0001]), torch.tensor([20])),   # eps_soc
         ],
         validate_args=False,
     )
@@ -236,24 +240,31 @@ def fit_posterior(density_estimator, _theta_o, _theta_o_df, _x_o, _save_dir, num
     # )
     # posterior_sample = posterior.sample((num_samples,), x=x_o.T)
 
-    trainer = NLE(prior, density_estimator="maf")
+    trainer = SNPE(prior, density_estimator="maf")
+    # trainer = NLE(prior, density_estimator="maf")
     posterior = trainer.build_posterior(
         density_estimator=density_estimator,
         prior=prior,
         mcmc_method="nuts_pyro",  # "nuts_pyro" "slice_np_vectorized"
         mcmc_parameters=mcmc_parameters,
     )
-    posterior_sample = posterior.sample((num_samples,), x=_x_o.T)
+    posterior_sample = posterior.sample_batched((num_samples,), x=_x_o.T)
+    # posterior_sample shape is (num_x, num_samples, num_theta)
+    # need to reshape to (num_x * num_samples, num_theta)
+    posterior_sample = posterior_sample.reshape(-1, len(params))
+
+
+    # posterior_sample = posterior.sample((num_samples,), x=_x_o.T)
 
     # posterior = DirectPosterior(density_estimator, prior=prior)
     # posterior_sample = posterior.sample_batched((num_samples,), x=x_o.T)
 
-    inference_data = posterior.get_arviz_inference_data()
-    with az.style.context("arviz-darkgrid"):
-        az.plot_trace(inference_data, compact=False)
-
-    plt.savefig(_save_dir / "traceplot.png", dpi=300)
-    plt.close()
+    # inference_data = posterior.get_arviz_inference_data()
+    # with az.style.context("arviz-darkgrid"):
+    #     az.plot_trace(inference_data, compact=False)
+    #
+    # plt.savefig(_save_dir / "traceplot.png", dpi=300)
+    # plt.close()
 
 
     labels = ["$\lambda$", "$\\beta$", "$\\tau$", "$\\epsilon_{soc}$"]  #
