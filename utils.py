@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sbi.analysis import pairplot
-from sbi.inference import NLE, SNPE
+from sbi.inference import SNPE
 from sbi.utils import BoxUniform, MultipleIndependent
 from torch.distributions import Exponential, LogNormal
 import torch.nn.functional as F
@@ -17,52 +17,59 @@ from model import model_sim, param_gen
 
 
 def extract_history_vectors(df, n_options=121):
-    df = df.sort_values(['group', 'round', 'agent', 'trial']).copy()
+    df = df.sort_values(['group', 'round', 'agent', 'trial']).reset_index(drop=True)
 
-    # Add new empty columns for history vectors
-    df['private_reward_vector'] = [[] for _ in range(len(df))]
-    df['social_reward_vector'] = [[] for _ in range(len(df))]
+    # Prepare columns to hold vectors as arrays
+    df['private_reward_vector'] = [np.zeros(n_options) for _ in range(len(df))]
+    df['social_reward_vector'] = [np.zeros(n_options) for _ in range(len(df))]
 
-    groups = df.groupby(['group', 'round', 'agent'])
-    for (group, _round, agent), group_data in groups:
-        for idx, row in group_data.iterrows():
-            trial = int(row['trial'])
+    # Precompute group-round-agent and group-round splits to avoid repeated filtering
+    group_round_agent_groups = df.groupby(['group', 'round', 'agent'], sort=False)
+    group_round_groups = df.groupby(['group', 'round'], sort=False)
 
-            # Private history: what this agent observed up to t-1
-            private_vector = np.zeros(n_options)
-            past_private = group_data.iloc[:trial]
-            if not past_private.empty:
-                for _, pr in past_private.iterrows():
-                    choice = int(pr['choice'])
-                    reward = pr['reward']
-                    private_vector[choice] = reward
+    # Store per-agent private histories (indexed by trial)
+    private_histories = {}  # (group, round, agent, trial) -> vector
 
-            # Social history: what others observed up to t-1
-            social_vector = np.zeros(n_options)
-            social_group = df[(df['group'] == group) & (df['round'] == _round) & (df['agent'] != agent) & (df['trial'] < trial)]
-            if not social_group.empty:
-                for _, sr in social_group.iterrows():
-                    choice = int(sr['choice'])
-                    reward = sr['reward']
-                    if social_vector[choice] == 0:
-                        social_vector[choice] = reward
-                    else:
-                        # If there are multiple observations, take the average
-                        social_vector[choice] = (social_vector[choice] + reward) / 2
+    # ---------- First pass: fill private_reward_vector and store history ----------
+    for (group, rnd, agent), group_data in group_round_agent_groups:
+        choices = group_data['choice'].astype(int).to_numpy()
+        rewards = group_data['reward'].to_numpy()
+        trials = group_data['trial'].astype(int).to_numpy()
 
-            df.at[idx, 'private_reward_vector'] = private_vector
-            df.at[idx, 'social_reward_vector'] = social_vector
+        private_vector = np.zeros(n_options)
+        for idx, (trial, choice, reward) in zip(group_data.index, zip(trials, choices, rewards)):
+            # Store a copy of the current state (before this trial)
+            df.at[idx, 'private_reward_vector'] = private_vector.copy()
+            private_histories[(group, rnd, agent, trial)] = private_vector.copy()
+            # Update private vector for next trial
+            private_vector[choice] = reward
+
+    # ---------- Second pass: fill social_reward_vector ----------
+    for (group, rnd), group_data in group_round_groups:
+        agents = group_data['agent'].unique()
+
+        for agent in agents:
+            # Trials for this agent
+            agent_data = df[(df['group'] == group) & (df['round'] == rnd) & (df['agent'] == agent)]
+            trials = agent_data['trial'].astype(int).to_numpy()
+
+            for idx, trial in zip(agent_data.index, trials):
+                # Gather private histories from other agents up to this trial
+                other_agents = [a for a in agents if a != agent]
+                social_vector = np.mean(
+                    [private_histories[(group, rnd, other_agent, trial)] for other_agent in other_agents], axis=0)
+
+                # Assign computed social vector
+                df.at[idx, 'social_reward_vector'] = social_vector
 
     return df
 
 
-def prepare_theta_x_nle(simulations, params=('lambda', 'beta', 'tau', 'eps_soc'), n_options=121):
-    theta_list = []
+
+def prepare_x(simulations, n_options=121):
     x_list = []
 
     for idx, row in simulations.iterrows():
-        # Extract parameter values
-        param_values = [row[p] for p in params]
 
         # Extract private and social history vectors
         private_vector = row['private_reward_vector']
@@ -70,19 +77,16 @@ def prepare_theta_x_nle(simulations, params=('lambda', 'beta', 'tau', 'eps_soc')
 
         # Concatenate parameters and history into theta
         history_vector = np.concatenate([private_vector, social_vector])
-        theta_row = np.concatenate([param_values])
 
         # One-hot encode choice
         choice = int(row['choice'])
         choice_one_hot = F.one_hot(torch.tensor(choice), num_classes=n_options).numpy()
 
-        theta_list.append(theta_row)
         x_list.append(np.concatenate([choice_one_hot, history_vector]))
 
-    theta = torch.tensor(np.array(theta_list), dtype=torch.float32)
     x = torch.tensor(np.array(x_list), dtype=torch.float32)
 
-    return theta, x
+    return x
 
 def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_simulation=6000,
                      params=("lambda", "beta", "tau", "eps_soc"), n_options=121, n_rounds=8,
@@ -134,7 +138,8 @@ def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_si
     # cols = params + ['env']
     # theta = torch.tensor(simulations[cols].to_numpy(), dtype=torch.float32)
     # x = torch.tensor(simulations['choice'].to_numpy(), dtype=torch.float32).unsqueeze(1)
-    theta, x = prepare_theta_x_nle(simulations, params=params, n_options=n_options)
+    theta = torch.tensor(simulations[params].to_numpy(), dtype=torch.float32)
+    x = prepare_x(simulations, n_options=n_options)
 
     trainer = SNPE(_proposal, show_progress_bars=True, density_estimator="maf")
     # trainer = NLE(_proposal, show_progress_bars=True, density_estimator="maf")
@@ -144,7 +149,7 @@ def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_si
     torch.save(_inference.state_dict(), save_dir / "inference.pth")
     return _inference
 
-def load_train_likelihood(save_dir, n_environments):
+def load_train_likelihood(save_dir):
     _proposal = MultipleIndependent(
         [
             BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # lambda
@@ -159,7 +164,7 @@ def load_train_likelihood(save_dir, n_environments):
         ],
         validate_args=False,
     )
-    trainer = NLE(prior=_proposal, density_estimator="maf")
+    trainer = SNPE(prior=_proposal, density_estimator="maf")
     _inference = trainer._build_neural_net()
 
     # Load weights
@@ -190,16 +195,24 @@ def simulate_observations(all_environments, n_environments, n_groups_simulation=
 
     # theta_o = torch.tensor(simulations_o[params + ['env']].to_numpy(), dtype=torch.float32)
     # x_o = torch.tensor(simulations_o['choice'].to_numpy(), dtype=torch.float32).unsqueeze(1).T
-    _theta_o, _x_o = prepare_theta_x_nle(simulations_o, params=params)
+    _x_o = prepare_x(simulations_o)
+    _theta_o = torch.tensor(simulations_o[params].to_numpy(), dtype=torch.float32)
     return _theta_o, _theta_o_df, _x_o, simulations_o.agent.values
 
 
-def human_observations():
-    pass
-    # return theta_o, theta_o_df, x_o
+def human_observations(subj_data_all, group_id=None):
+    if group_id is not None:
+        subj_data = subj_data_all[(subj_data_all['group'] == group_id)].copy()
+    else:
+        subj_data = subj_data_all.copy()
+
+    subj_data = extract_history_vectors(subj_data)
+    _x_o = prepare_x(subj_data)
+
+    return _x_o, subj_data.agent.values
 
 
-def fit_posterior(density_estimator, _theta_o, _theta_o_df, _x_o, _save_dir, num_samples=50_000,
+def fit_posterior(density_estimator, _theta_o_df, _x_o, _save_dir, num_samples=50_000,
                   params=("lambda", "beta", "tau", "eps_soc")):
     params = list(params)
     mcmc_parameters = dict(
@@ -309,6 +322,8 @@ def fit_posterior(density_estimator, _theta_o, _theta_o_df, _x_o, _save_dir, num
     )
     plt.savefig(_save_dir / "pairplot2.png", dpi=300)
     plt.close()
+
+    return posterior_sample
 
 
 if __name__ == "__main__":
