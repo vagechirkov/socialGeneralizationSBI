@@ -42,6 +42,7 @@ Modifications:
 import numpy as np
 import pandas as pd
 from scipy.spatial.distance import cdist
+from tqdm import tqdm
 
 
 def ucb(pred, beta=0.5):
@@ -410,7 +411,7 @@ def model_sim(allParams, envList, rounds, shor, baseEpsilon=.0001, payoff=True, 
     Xstar = np.array(
         [(x, y) for x in range(np.sqrt(gridSize).astype(int)) for y in range(np.sqrt(gridSize).astype(int))])
 
-    for g, group_params in enumerate(allParams):  # iterate over groups
+    for g, group_params in enumerate(tqdm(allParams, desc="Simulating groups")): # iterate over groups
         group_data = simulate_group(group_params, envList, rounds, shor, baseEpsilon, payoff, prior_mean, prior_scale,
                                     Xstar, nAgents, gridSize, g)
         for col in data_columns:

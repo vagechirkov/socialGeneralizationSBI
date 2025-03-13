@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 from sbi.analysis import pairplot
 from sbi.inference import SNPE
-from sbi.utils import BoxUniform, MultipleIndependent
+from sbi.utils import MultipleIndependent
 from torch.distributions import Exponential, LogNormal
 import torch.nn.functional as F
 
@@ -65,6 +65,52 @@ def extract_history_vectors(df, n_options=121):
     return df
 
 
+def build_summary_vectors(df, n_trials=15):
+    # Container for the summary
+    summary_rows = []
+
+    # Group by group and round
+    group_round_groups = df.groupby(['group', 'round'], sort=False)
+
+    for (group, rnd), group_data in group_round_groups:
+        agents = group_data['agent'].unique()
+
+        # Pre-extract data for all agents in this group/round
+        agent_data = {}
+        for agent in agents:
+            agent_trials = group_data[group_data['agent'] == agent].sort_values('trial')
+            choices = agent_trials['choice'].to_numpy()
+            rewards = agent_trials['reward'].to_numpy()
+            agent_data[agent] = (choices[:n_trials], rewards[:n_trials])
+
+        # Now build a vector for each agent
+        for agent in agents:
+            # Own choices and rewards
+            own_choices, own_rewards = agent_data[agent]
+
+            # Collect others' choices and rewards
+            others = [a for a in agents if a != agent]
+            others_choices_rewards = []
+            for other_agent in others:
+                other_choices, other_rewards = agent_data[other_agent]
+                others_choices_rewards.extend([other_choices, other_rewards])
+
+            # Concatenate all into one vector
+            summary_vector = np.concatenate(
+                [own_choices, own_rewards] + others_choices_rewards
+            )
+
+            summary_rows.append({
+                'group': group,
+                'round': rnd,
+                'agent': agent,
+                'summary_vector': summary_vector
+            })
+
+    # Create summary DataFrame
+    summary_df = pd.DataFrame(summary_rows)
+    return summary_df
+
 
 def prepare_x(simulations, n_options=121):
     x_list = []
@@ -94,15 +140,15 @@ def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_si
     params = list(params)
     _proposal = MultipleIndependent(
         [
-            # LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # lambda
-            # LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # beta
-            # LogNormal(torch.tensor([-4.0]), torch.tensor([0.6])),   # tau
-            # Exponential(torch.tensor([0.2])),                       # eps_soc
+            LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # lambda
+            LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # beta
+            LogNormal(torch.tensor([-4.0]), torch.tensor([0.6])),   # tau
+            Exponential(torch.tensor([0.2])),                       # eps_soc
 
-            BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # lambda
-            BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # beta
-            BoxUniform(torch.tensor([0.0001]), torch.tensor([0.1])),   # tau
-            BoxUniform(torch.tensor([0.0001]), torch.tensor([20])),   # eps_soc
+            # BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # lambda
+            # BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # beta
+            # BoxUniform(torch.tensor([0.0001]), torch.tensor([0.1])),   # tau
+            # BoxUniform(torch.tensor([0.0001]), torch.tensor([20])),   # eps_soc
 
             # BoxUniform(torch.tensor([0.0]), torch.tensor([n_environments - 1.0])),   # env
             # BoxUniform(torch.full((n_options,), reward_min),
@@ -131,15 +177,24 @@ def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_si
     _used_envs = [[all_environments[i][ii] for ii in range(int(n_environments))] for i in range(len(all_environments))]
 
     simulations = model_sim(pars, _used_envs, n_rounds, 15, payoff=True)
-    simulations = extract_history_vectors(simulations)
+    # simulations = extract_history_vectors(simulations)
     # plt.plot(simulations.loc[14, 'private_reward_vector']); plt.show()
     # plt.plot(simulations.loc[14, 'social_reward_vector']); plt.show()
 
     # cols = params + ['env']
     # theta = torch.tensor(simulations[cols].to_numpy(), dtype=torch.float32)
     # x = torch.tensor(simulations['choice'].to_numpy(), dtype=torch.float32).unsqueeze(1)
-    theta = torch.tensor(simulations[params].to_numpy(), dtype=torch.float32)
-    x = prepare_x(simulations, n_options=n_options)
+    # theta = torch.tensor(simulations[params].to_numpy(), dtype=torch.float32)
+    # x = prepare_x(simulations, n_options=n_options)
+
+    simulations_orig = simulations.sort_values(['group', 'round', 'agent', 'trial']).reset_index(drop=True)
+
+    # save the simulations
+    simulations_orig.to_csv(save_dir / "simulations.csv", index=False)
+
+    simulations = build_summary_vectors(simulations_orig)
+    x = torch.tensor(np.array(simulations['summary_vector'].to_list()), dtype=torch.float32)
+    theta = torch.tensor(simulations_orig.loc[simulations_orig.trial == 1, params].to_numpy(), dtype=torch.float32)
 
     trainer = SNPE(_proposal, show_progress_bars=True, density_estimator="maf")
     # trainer = NLE(_proposal, show_progress_bars=True, density_estimator="maf")
@@ -148,29 +203,6 @@ def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_si
 
     torch.save(_inference.state_dict(), save_dir / "inference.pth")
     return _inference
-
-def load_train_likelihood(save_dir):
-    _proposal = MultipleIndependent(
-        [
-            BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # lambda
-            BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # beta
-            BoxUniform(torch.tensor([0.0001]), torch.tensor([0.1])),   # tau
-            BoxUniform(torch.tensor([0.0001]), torch.tensor([20])),   # eps_soc
-            # BoxUniform(torch.tensor([0.0]), torch.tensor([n_environments - 1.0])),   # env
-            # BoxUniform(torch.full((n_options,), reward_min),
-            #            torch.full((n_options,), reward_max)),  # private reward vector
-            # BoxUniform(torch.full((n_options,), reward_min),
-            #            torch.full((n_options,), reward_max)),  # social reward vector
-        ],
-        validate_args=False,
-    )
-    trainer = SNPE(prior=_proposal, density_estimator="maf")
-    _inference = trainer._build_neural_net()
-
-    # Load weights
-    _inference.load_state_dict(torch.load(save_dir / "inference.pth"))
-    return _inference
-
 
 def simulate_observations(all_environments, n_environments, n_groups_simulation=2,
                           ground_truth_params=(1.11, 0.33, 0.03, 12.55), params=("lambda", "beta", "tau", "eps_soc"),
@@ -191,12 +223,21 @@ def simulate_observations(all_environments, n_environments, n_groups_simulation=
                 sim_param_o[i][a][p] = _theta_o_df.loc[0, p]
     _used_envs = [[all_environments[i][ii] for ii in range(int(n_environments))] for i in range(len(all_environments))]
     simulations_o = model_sim(sim_param_o, _used_envs, n_rounds, 15, payoff=True)
-    simulations_o = extract_history_vectors(simulations_o)
 
-    # theta_o = torch.tensor(simulations_o[params + ['env']].to_numpy(), dtype=torch.float32)
-    # x_o = torch.tensor(simulations_o['choice'].to_numpy(), dtype=torch.float32).unsqueeze(1).T
-    _x_o = prepare_x(simulations_o)
-    _theta_o = torch.tensor(simulations_o[params].to_numpy(), dtype=torch.float32)
+
+    # simulations_o = extract_history_vectors(simulations_o)
+    #
+    # # theta_o = torch.tensor(simulations_o[params + ['env']].to_numpy(), dtype=torch.float32)
+    # # x_o = torch.tensor(simulations_o['choice'].to_numpy(), dtype=torch.float32).unsqueeze(1).T
+    # _x_o = prepare_x(simulations_o)
+    # _theta_o = torch.tensor(simulations_o[params].to_numpy(), dtype=torch.float32)
+
+
+    simulations_o_orig = simulations_o.sort_values(['group', 'round', 'agent', 'trial']).reset_index(drop=True)
+    simulations_o = build_summary_vectors(simulations_o_orig)
+    _x_o = torch.tensor(np.array(simulations_o['summary_vector'].to_list()), dtype=torch.float32)
+    _theta_o = torch.tensor(simulations_o_orig.loc[simulations_o_orig.trial == 1, params].to_numpy(), dtype=torch.float32)
+
     return _theta_o, _theta_o_df, _x_o, simulations_o.agent.values
 
 
@@ -206,8 +247,12 @@ def human_observations(subj_data_all, group_id=None):
     else:
         subj_data = subj_data_all.copy()
 
-    subj_data = extract_history_vectors(subj_data)
-    _x_o = prepare_x(subj_data)
+    # subj_data = extract_history_vectors(subj_data)
+    # _x_o = prepare_x(subj_data)
+
+    subj_data = subj_data.sort_values(['group', 'round', 'agent', 'trial']).reset_index(drop=True)
+    subj_data = build_summary_vectors(subj_data)
+    _x_o = torch.tensor(np.array(subj_data['summary_vector'].to_list()), dtype=torch.float32)
 
     return _x_o, subj_data.agent.values
 
@@ -340,8 +385,41 @@ if __name__ == "__main__":
         f=open(os.path.join(path, file))
         all_environments.append(json.load(f))
 
-    inference = learn_likelihood(all_environments, save_dir, n_environments=1.0, n_groups_simulation=100, n_rounds=2)
-    theta_o, theta_o_df, x_o, agent = simulate_observations(all_environments, n_environments=5, n_groups_simulation=2,
-                                                     ground_truth_params=(1.11, 0.33, 0.03, 12.55))
-    fit_posterior(inference, theta_o, theta_o_df, x_o.T, save_dir, num_samples=50_000)
-    # npe_posterior_sample(inference, prior, theta_o_df, x_o, save_dir, num_samples=10)
+
+    inference = learn_likelihood(all_environments, save_dir, n_environments=len(all_environments),
+                                 n_groups_simulation=10, n_rounds=8)
+
+    ground_truths = [
+        (1.11, 0.33, 0.03, 12.55),
+        (0.88, 0.22, 0.01, 15.33),
+        (1.44, 0.44, 0.02, 9.77),
+        (0.77, 0.55, 0.05, 10.22),
+        (1.11, 0.44, 0.02, 0.77),
+        (1.11, 0.33, 0.1, 12.55),
+    ]
+
+    for i, gt in enumerate(ground_truths):
+        _, theta_o_df, x_o, agent = simulate_observations(all_environments, n_environments=1, n_groups_simulation=1,
+                                                          ground_truth_params=gt, simulated_agents=(0,))
+        save_dir2 = save_dir / f'param_recovery_{i}'
+        save_dir2.mkdir(parents=True, exist_ok=True)
+        posterior_samples = fit_posterior(inference, theta_o_df, x_o[agent == 0].T, save_dir2, num_samples=500)
+
+
+    subj_data_all = pd.read_csv("./data/e1_data.csv")
+    fit_results = pd.read_csv("./data/e1_fitting_data/fit+pars_e1.csv")
+    for group_id in fit_results.group.unique():
+        for agent_id in [1, 2, 3, 4]:
+            h_x_o, h_agent = human_observations(subj_data_all, group_id=group_id)
+            h_theta_o_df = pd.DataFrame(columns=("lambda", "beta", "tau", "eps_soc"), index=[0], dtype=float)
+            mask = (fit_results.group == group_id) & (fit_results.model == 'SG') & (fit_results.agent == agent_id)
+            h_theta_o_df.loc[0,:] = fit_results.loc[mask, ["lambda", "beta", "tau", "par"]].values
+
+            save_dir2 = save_dir / f'g_{group_id}_a_{agent_id}'
+            save_dir2.mkdir(parents=True, exist_ok=True)
+            posterior_samples = fit_posterior(inference, h_theta_o_df, h_x_o[h_agent == agent_id].T, save_dir2,
+                                              num_samples=500)
+
+            # average
+            fit_results.loc[mask, ["lambda_sbi", "beta_sbi", "tau_sbi", "eps_soc_sbi"]] = posterior_samples.mean(axis=0)
+            fit_results.to_csv(save_dir / "fit+pars_e1_sbi.csv", index=False)
