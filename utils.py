@@ -9,11 +9,32 @@ import pandas as pd
 import torch
 from sbi.analysis import pairplot
 from sbi.inference import SNPE
-from sbi.utils import MultipleIndependent
+from sbi.utils import BoxUniform, MultipleIndependent
 from torch.distributions import Exponential, LogNormal
 import torch.nn.functional as F
 
 from model import model_sim, param_gen
+
+box_uniform_prior = MultipleIndependent(
+    [
+        BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # lambda
+        BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # beta
+        BoxUniform(torch.tensor([0.0001]), torch.tensor([0.1])),   # tau
+        BoxUniform(torch.tensor([0.0001]), torch.tensor([20])),   # eps_soc
+    ],
+    validate_args=False,
+)
+
+weakly_informed_prior = MultipleIndependent(
+    [
+        LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # lambda
+        LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # beta
+        LogNormal(torch.tensor([-4.0]), torch.tensor([0.6])),   # tau
+        Exponential(torch.tensor([0.2])),                       # eps_soc
+    ],
+    validate_args=False,
+)
+
 
 
 def extract_history_vectors(df, n_options=121):
@@ -136,28 +157,9 @@ def prepare_x(simulations, n_options=121):
 
 def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_simulation=6000,
                      params=("lambda", "beta", "tau", "eps_soc"), n_options=121, n_rounds=8,
-                     reward_min=-1, reward_max=1):
+                     reward_min=-1, reward_max=1, prior_type='weakly_informed'):
     params = list(params)
-    _proposal = MultipleIndependent(
-        [
-            LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # lambda
-            LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # beta
-            LogNormal(torch.tensor([-4.0]), torch.tensor([0.6])),   # tau
-            Exponential(torch.tensor([0.2])),                       # eps_soc
-
-            # BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # lambda
-            # BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # beta
-            # BoxUniform(torch.tensor([0.0001]), torch.tensor([0.1])),   # tau
-            # BoxUniform(torch.tensor([0.0001]), torch.tensor([20])),   # eps_soc
-
-            # BoxUniform(torch.tensor([0.0]), torch.tensor([n_environments - 1.0])),   # env
-            # BoxUniform(torch.full((n_options,), reward_min),
-            #            torch.full((n_options,), reward_max)),  # private reward vector
-            # BoxUniform(torch.full((n_options,), reward_min),
-            #            torch.full((n_options,), reward_max)),  # social reward vector
-        ],
-        validate_args=False,
-    )
+    _proposal = weakly_informed_prior if prior_type == 'weakly_informed' else box_uniform_prior
 
     num_simulations = n_groups_simulation * 4
     proposal_samples = _proposal.sample((num_simulations,))
@@ -258,7 +260,7 @@ def human_observations(subj_data_all, group_id=None):
 
 
 def fit_posterior(density_estimator, _theta_o_df, _x_o, _save_dir, num_samples=50_000,
-                  params=("lambda", "beta", "tau", "eps_soc")):
+                  params=("lambda", "beta", "tau", "eps_soc"), prior_type='weakly_informed'):
     params = list(params)
     mcmc_parameters = dict(
         num_chains=7,
@@ -267,20 +269,7 @@ def fit_posterior(density_estimator, _theta_o_df, _x_o, _save_dir, num_samples=5
         init_strategy="proposal",
         num_workers=8
     )
-    prior = MultipleIndependent(
-        [
-            # weakly informed priors
-            LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # lambda
-            LogNormal(torch.tensor([-0.3]), torch.tensor([0.6])),  # beta
-            LogNormal(torch.tensor([-4.0]), torch.tensor([0.6])),   # tau
-            Exponential(torch.tensor([0.2])),                       # eps_soc
-            # BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # lambda
-            # BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # beta
-            # BoxUniform(torch.tensor([0.0001]), torch.tensor([0.1])),   # tau
-            # BoxUniform(torch.tensor([0.0001]), torch.tensor([20])),   # eps_soc
-        ],
-        validate_args=False,
-    )
+    prior  = weakly_informed_prior if prior_type == 'weakly_informed' else box_uniform_prior
     # prior_transform = mcmc_transform(prior)
     # potential_fn = LikelihoodBasedPotential(density_estimator, prior)
     #
@@ -372,6 +361,15 @@ def fit_posterior(density_estimator, _theta_o_df, _x_o, _save_dir, num_samples=5
 
 
 if __name__ == "__main__":
+    # parce arguments
+    import argparse
+    parser = argparse.ArgumentParser(description='Parameter recovery')
+    # n_groups_simulation, prior_type, num_samples
+    parser.add_argument('--n_groups_simulation', type=int, default=10_000)
+    parser.add_argument('--prior_type', type=str, default='weakly_informed')
+    parser.add_argument('--num_samples', type=int, default=50_000)
+    args = parser.parse_args()
+
     torch.manual_seed(1)
     np.random.seed(42)
 
@@ -387,7 +385,7 @@ if __name__ == "__main__":
 
 
     inference = learn_likelihood(all_environments, save_dir, n_environments=len(all_environments),
-                                 n_groups_simulation=10_000, n_rounds=8)  # 0_00
+                                 n_groups_simulation=args.n_groups_simulation, n_rounds=8, prior_type=args.prior_type)
 
     ground_truths = [
         (1.11, 0.33, 0.03, 12.55),
@@ -403,7 +401,8 @@ if __name__ == "__main__":
                                                           ground_truth_params=gt, simulated_agents=(0,))
         save_dir2 = save_dir / f'param_recovery_{i}'
         save_dir2.mkdir(parents=True, exist_ok=True)
-        posterior_samples = fit_posterior(inference, theta_o_df, x_o[agent == 0].T, save_dir2, num_samples=50_000)
+        posterior_samples = fit_posterior(inference, theta_o_df, x_o[agent == 0].T, save_dir2,
+                                          num_samples=args.num_samples, prior_type=args.prior_type)
 
 
     subj_data_all = pd.read_csv("./data/e1_data.csv")
@@ -418,7 +417,7 @@ if __name__ == "__main__":
             save_dir2 = save_dir / f'g_{group_id}_a_{agent_id}'
             save_dir2.mkdir(parents=True, exist_ok=True)
             posterior_samples = fit_posterior(inference, h_theta_o_df, h_x_o[h_agent == agent_id].T, save_dir2,
-                                              num_samples=50_000)
+                                              num_samples=args.num_samples, prior_type=args.prior_type)
 
             # average
             fit_results.loc[mask, ["lambda_sbi", "beta_sbi", "tau_sbi", "eps_soc_sbi"]] = posterior_samples.mean(axis=0)
