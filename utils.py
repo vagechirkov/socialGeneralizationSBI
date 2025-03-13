@@ -190,7 +190,7 @@ def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_si
     simulations_orig = simulations.sort_values(['group', 'round', 'agent', 'trial']).reset_index(drop=True)
 
     # save the simulations
-    simulations_orig.to_csv(save_dir / "simulations.csv", index=False)
+    # simulations_orig.to_csv(save_dir / "simulations.csv", index=False)
 
     simulations = build_summary_vectors(simulations_orig)
     x = torch.tensor(np.array(simulations['summary_vector'].to_list()), dtype=torch.float32)
@@ -387,7 +387,7 @@ if __name__ == "__main__":
 
 
     inference = learn_likelihood(all_environments, save_dir, n_environments=len(all_environments),
-                                 n_groups_simulation=10, n_rounds=8)
+                                 n_groups_simulation=10_000, n_rounds=8)
 
     ground_truths = [
         (1.11, 0.33, 0.03, 12.55),
@@ -403,7 +403,7 @@ if __name__ == "__main__":
                                                           ground_truth_params=gt, simulated_agents=(0,))
         save_dir2 = save_dir / f'param_recovery_{i}'
         save_dir2.mkdir(parents=True, exist_ok=True)
-        posterior_samples = fit_posterior(inference, theta_o_df, x_o[agent == 0].T, save_dir2, num_samples=500)
+        posterior_samples = fit_posterior(inference, theta_o_df, x_o[agent == 0].T, save_dir2, num_samples=50_000)
 
 
     subj_data_all = pd.read_csv("./data/e1_data.csv")
@@ -418,7 +418,7 @@ if __name__ == "__main__":
             save_dir2 = save_dir / f'g_{group_id}_a_{agent_id}'
             save_dir2.mkdir(parents=True, exist_ok=True)
             posterior_samples = fit_posterior(inference, h_theta_o_df, h_x_o[h_agent == agent_id].T, save_dir2,
-                                              num_samples=500)
+                                              num_samples=50_000)
 
             # average
             fit_results.loc[mask, ["lambda_sbi", "beta_sbi", "tau_sbi", "eps_soc_sbi"]] = posterior_samples.mean(axis=0)
