@@ -303,8 +303,8 @@ def fit_posterior(density_estimator, _theta_o_df, _x_o, _save_dir, num_samples=5
     posterior = trainer.build_posterior(
         density_estimator=density_estimator,
         prior=prior,
-        mcmc_method="nuts_pyro",  # "nuts_pyro" "slice_np_vectorized"
-        mcmc_parameters=mcmc_parameters,
+        # mcmc_method="nuts_pyro",  # "nuts_pyro" "slice_np_vectorized"
+        # mcmc_parameters=mcmc_parameters,
     )
     posterior_sample = posterior.sample_batched((num_samples,), x=_x_o.T)
     # posterior_sample shape is (num_x, num_samples, num_theta)
@@ -387,7 +387,7 @@ if __name__ == "__main__":
 
 
     inference = learn_likelihood(all_environments, save_dir, n_environments=len(all_environments),
-                                 n_groups_simulation=10, n_rounds=8)  # 0_00
+                                 n_groups_simulation=10_000, n_rounds=8)  # 0_00
 
     ground_truths = [
         (1.11, 0.33, 0.03, 12.55),
