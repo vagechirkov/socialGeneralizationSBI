@@ -387,7 +387,7 @@ if __name__ == "__main__":
 
 
     inference = learn_likelihood(all_environments, save_dir, n_environments=len(all_environments),
-                                 n_groups_simulation=10_000, n_rounds=8)
+                                 n_groups_simulation=10, n_rounds=8)  # 0_00
 
     ground_truths = [
         (1.11, 0.33, 0.03, 12.55),
