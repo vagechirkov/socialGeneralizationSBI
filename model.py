@@ -420,6 +420,10 @@ def model_sim(allParams, envList, rounds, shor, baseEpsilon=.0001, payoff=True, 
     # format dataset
     data = np.column_stack([np.concatenate(data_dict[col]) for col in data_columns])
     agentData = pd.DataFrame(data, columns=data_columns)
+
+    # make rewards between 0 and 1 based on max and min values
+    agentData['reward'] = ((agentData['reward'] - agentData['reward'].min()) /
+                           (agentData['reward'].max() - agentData['reward'].min()))
     return agentData
 
 

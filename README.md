@@ -21,7 +21,6 @@ eval "$(pyenv virtualenv-init -)"
 
 
 # tmux new -s sbi
-
 tmux attach -t sbi
 
 poetry run python3 utils.py --n_groups_simulation 10_000 --prior_type 'weakly_informed' --num_samples 50_000
