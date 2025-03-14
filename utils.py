@@ -1,5 +1,6 @@
 import json
 import os
+import pickle
 from datetime import datetime
 from pathlib import Path
 
@@ -118,7 +119,7 @@ def build_summary_vectors(df, n_trials=15):
 
             # Concatenate all into one vector
             summary_vector = np.concatenate(
-                [own_choices, own_rewards] + others_choices_rewards
+                [[group_data['env'].values[0]]] + [own_choices, own_rewards] + others_choices_rewards
             )
 
             summary_rows.append({
@@ -203,7 +204,6 @@ def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_si
     estimator = trainer.append_simulations(theta, x)
     _inference = estimator.train()
 
-    torch.save(_inference.state_dict(), save_dir / "inference.pth")
     return _inference
 
 def simulate_observations(all_environments, n_environments, n_groups_simulation=2,
@@ -259,6 +259,18 @@ def human_observations(subj_data_all, group_id=None):
     return _x_o, subj_data.agent.values
 
 
+def save_posterior(save_dir, prior_type, density_estimator):
+    prior  = weakly_informed_prior if prior_type == 'weakly_informed' else box_uniform_prior
+    trainer = SNPE(prior, density_estimator="maf")
+    posterior = trainer.build_posterior(
+        density_estimator=density_estimator,
+        prior=prior,
+    )
+
+    with open(save_dir / "posterior.pkl", "wb") as handle:
+        pickle.dump(posterior, handle)
+
+
 def fit_posterior(density_estimator, _theta_o_df, _x_o, _save_dir, num_samples=50_000,
                   params=("lambda", "beta", "tau", "eps_soc"), prior_type='weakly_informed'):
     params = list(params)
@@ -295,6 +307,10 @@ def fit_posterior(density_estimator, _theta_o_df, _x_o, _save_dir, num_samples=5
         # mcmc_method="nuts_pyro",  # "nuts_pyro" "slice_np_vectorized"
         # mcmc_parameters=mcmc_parameters,
     )
+
+    with open(save_dir / "posterior.pkl", "wb") as handle:
+        pickle.dump(posterior, handle)
+
     posterior_sample = posterior.sample_batched((num_samples,), x=_x_o.T)
     # posterior_sample shape is (num_x, num_samples, num_theta)
     # need to reshape to (num_x * num_samples, num_theta)
@@ -373,7 +389,7 @@ if __name__ == "__main__":
     torch.manual_seed(1)
     np.random.seed(42)
 
-    save_dir = Path("parameter_recovery") / datetime.now().strftime("%Y%m%d-%H%M%S")
+    save_dir = Path("parameter_recovery") / datetime.now().strftime("%Y%m%d-%H%M%S-with-env")
     save_dir.mkdir(parents=True, exist_ok=True)
 
     path = 'data/environments'
@@ -384,8 +400,10 @@ if __name__ == "__main__":
         all_environments.append(json.load(f))
 
 
-    inference = learn_likelihood(all_environments, save_dir, n_environments=len(all_environments),
+    inference = learn_likelihood(all_environments, save_dir, n_environments=len(all_environments[0]),
                                  n_groups_simulation=args.n_groups_simulation, n_rounds=8, prior_type=args.prior_type)
+
+    save_posterior(save_dir, args.prior_type, inference)
 
     ground_truths = [
         (1.11, 0.33, 0.03, 12.55),
@@ -394,6 +412,7 @@ if __name__ == "__main__":
         (0.77, 0.55, 0.05, 10.22),
         (1.11, 0.44, 0.02, 0.77),
         (1.11, 0.33, 0.1, 12.55),
+        (0.11, 0.33, 0.03, 12.55),
     ]
 
     for i, gt in enumerate(ground_truths):
