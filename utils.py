@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from sbi.analysis import pairplot
+from sbi.analysis import pairplot, plot_tarp
+from sbi.diagnostics import check_tarp, run_tarp
 from sbi.inference import SNPE
 from sbi.utils import BoxUniform, MultipleIndependent
 from torch.distributions import Exponential, LogNormal
@@ -159,15 +160,31 @@ def prepare_x(simulations, n_options=121):
 def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_simulation=6000,
                      params=("lambda", "beta", "tau", "eps_soc"), n_options=121, n_rounds=8,
                      reward_min=-1, reward_max=1, prior_type='weakly_informed'):
+    _proposal, theta, x = simulate_data(all_environments, n_environments, n_groups_simulation, n_rounds, params,
+                                        prior_type)
+
+    trainer = SNPE(_proposal, show_progress_bars=True, density_estimator="maf")
+    # trainer = NLE(_proposal, show_progress_bars=True, density_estimator="maf")
+    estimator = trainer.append_simulations(theta, x)
+    _inference = estimator.train()
+
+    return _inference
+
+
+def simulate_data(
+    all_environments,
+    n_environments,
+    n_groups_simulation,
+    n_rounds=8,
+    params=("lambda", "beta", "tau", "eps_soc"),
+    prior_type="uniformed",
+):
     params = list(params)
     _proposal = weakly_informed_prior if prior_type == 'weakly_informed' else box_uniform_prior
-
     num_simulations = n_groups_simulation * 4
     proposal_samples = _proposal.sample((num_simulations,))
-
     # models=3 - social generalization
     pars = param_gen(4, n_groups_simulation, hom=True, models=3)
-
     for i in range(n_groups_simulation):
         for a in range(4):
             # set all parameters in pars to 0
@@ -176,35 +193,24 @@ def learn_likelihood(all_environments, save_dir, n_environments=5.0, n_groups_si
 
             for ii, p in enumerate(params):
                 pars[i][a][p] = proposal_samples[i * 4 + a, ii].item()
-
     _used_envs = [[all_environments[i][ii] for ii in range(int(n_environments))] for i in range(len(all_environments))]
-
     simulations = model_sim(pars, _used_envs, n_rounds, 15, payoff=True)
     # simulations = extract_history_vectors(simulations)
     # plt.plot(simulations.loc[14, 'private_reward_vector']); plt.show()
     # plt.plot(simulations.loc[14, 'social_reward_vector']); plt.show()
-
     # cols = params + ['env']
     # theta = torch.tensor(simulations[cols].to_numpy(), dtype=torch.float32)
     # x = torch.tensor(simulations['choice'].to_numpy(), dtype=torch.float32).unsqueeze(1)
     # theta = torch.tensor(simulations[params].to_numpy(), dtype=torch.float32)
     # x = prepare_x(simulations, n_options=n_options)
-
     simulations_orig = simulations.sort_values(['group', 'round', 'agent', 'trial']).reset_index(drop=True)
-
     # save the simulations
     # simulations_orig.to_csv(save_dir / "simulations.csv", index=False)
-
     simulations = build_summary_vectors(simulations_orig)
     x = torch.tensor(np.array(simulations['summary_vector'].to_list()), dtype=torch.float32)
     theta = torch.tensor(simulations_orig.loc[simulations_orig.trial == 1, params].to_numpy(), dtype=torch.float32)
+    return _proposal, theta, x
 
-    trainer = SNPE(_proposal, show_progress_bars=True, density_estimator="maf")
-    # trainer = NLE(_proposal, show_progress_bars=True, density_estimator="maf")
-    estimator = trainer.append_simulations(theta, x)
-    _inference = estimator.train()
-
-    return _inference
 
 def simulate_observations(all_environments, n_environments, n_groups_simulation=2,
                           ground_truth_params=(1.11, 0.33, 0.03, 12.55), params=("lambda", "beta", "tau", "eps_soc"),
@@ -376,12 +382,42 @@ def fit_posterior(density_estimator, _theta_o_df, _x_o, _save_dir, num_samples=5
     return posterior_sample
 
 
+def tarp_posterior_calibration(density_estimator, thetas, xs, _save_dir):
+    trainer = SNPE(box_uniform_prior, density_estimator="maf")
+    # trainer = NLE(prior, density_estimator="maf")
+    posterior = trainer.build_posterior(
+        density_estimator=density_estimator,
+        prior=box_uniform_prior,
+        # mcmc_method="nuts_pyro",  # "nuts_pyro" "slice_np_vectorized"
+        # mcmc_parameters=mcmc_parameters,
+    )
+
+    # the tarp method returns the ECP values for a given set of alpha coverage levels.
+    ecp, alpha = run_tarp(
+        thetas,
+        xs,
+        posterior,
+        references=None,  # will be calculated automatically.
+        num_posterior_samples=1000,
+    )
+
+    atc, ks_pval = check_tarp(ecp, alpha)
+    print(atc, "Should be close to 0")
+    print(ks_pval, "Should be larger than 0.05")
+
+    fig, ax = plot_tarp(ecp, alpha)
+
+    plt.savefig(_save_dir / "tarp_plot.png", dpi=300)
+    plt.close()
+
+
 if __name__ == "__main__":
     # parce arguments
     import argparse
     parser = argparse.ArgumentParser(description='Parameter recovery')
     # n_groups_simulation, prior_type, num_samples
     parser.add_argument('--n_groups_simulation', type=int, default=10_000)
+    parser.add_argument('--n_groups_simulation_tarp', type=int, default=10_000)
     parser.add_argument('--prior_type', type=str, default='weakly_informed')
     parser.add_argument('--num_samples', type=int, default=50_000)
     args = parser.parse_args()
@@ -402,6 +438,10 @@ if __name__ == "__main__":
 
     inference = learn_likelihood(all_environments, save_dir, n_environments=len(all_environments[0]),
                                  n_groups_simulation=args.n_groups_simulation, n_rounds=8, prior_type=args.prior_type)
+
+    _, theta, x = simulate_data(all_environments, n_environments=len(all_environments),
+                                n_groups_simulation=args.n_groups_simulation_tarp)
+    tarp_posterior_calibration(inference, theta, x, save_dir)
 
     save_posterior(save_dir, args.prior_type, inference)
 
