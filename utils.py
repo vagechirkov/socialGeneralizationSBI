@@ -397,6 +397,7 @@ def tarp_posterior_calibration(density_estimator, thetas, xs, _save_dir):
         thetas,
         xs,
         posterior,
+        num_workers=-1,
         references=None,  # will be calculated automatically.
         num_posterior_samples=1000,
     )

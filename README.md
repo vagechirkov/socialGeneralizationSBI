@@ -25,4 +25,5 @@ tmux attach -t sbi
 
 poetry run python3 utils.py --n_groups_simulation 10_000 --prior_type 'weakly_informed' --num_samples 50_000
 poetry run python3 utils.py --n_groups_simulation 10_000 --prior_type 'box_uniform' --num_samples 50_000
+poetry run python3 utils.py --n_groups_simulation 1_000 --n_groups_simulation_tarp 1_000 --prior_type 'box_uniform' --num_samples 50_000
 ```
