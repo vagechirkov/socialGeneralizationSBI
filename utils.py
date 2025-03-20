@@ -19,7 +19,7 @@ from model import model_sim, param_gen
 
 box_uniform_prior = MultipleIndependent(
     [
-        BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # lambda
+        BoxUniform(torch.tensor([0.0001]), torch.tensor([20])),   # lambda
         BoxUniform(torch.tensor([0.0001]), torch.tensor([2])),   # beta
         BoxUniform(torch.tensor([0.0001]), torch.tensor([0.1])),   # tau
         BoxUniform(torch.tensor([0.0001]), torch.tensor([20])),   # eps_soc
@@ -454,6 +454,7 @@ if __name__ == "__main__":
         (1.11, 0.44, 0.02, 0.77),
         (1.11, 0.33, 0.1, 12.55),
         (0.11, 0.33, 0.03, 12.55),
+        (11.11, 0.33, 0.03, 12.55),
     ]
 
     for i, gt in enumerate(ground_truths):
